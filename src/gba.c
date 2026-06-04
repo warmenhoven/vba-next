@@ -133,10 +133,28 @@ static uint16_t oam_native[0x200];
 #endif
 
 #else /* !MSB_FIRST: LE host - paletteRAM / oam are already host-endian. */
+#ifdef PER_FRAME_BATCHED
+/* Batched mode on LE needs per-context palette/OAM snapshots because all 160
+ * scanlines render at end-of-frame; reading paletteRAM/oam directly would
+ * give every scanline the END-OF-FRAME palette/OAM rather than each line's
+ * own state.  The data is already host-endian, so the sync is a plain
+ * memcpy, and PAL_U16/OAM_U16 resolve via renderer_ctx like the BE path. */
+static INLINE void palette_native_sync(uint16_t *dst)
+{
+	memcpy(dst, paletteRAM, 0x200 * sizeof(uint16_t));
+}
+static INLINE void oam_native_sync(uint16_t *dst)
+{
+	memcpy(dst, oam, 0x200 * sizeof(uint16_t));
+}
+#define PAL_U16 renderer_ctx.palette_native
+#define OAM_U16 renderer_ctx.oam_native
+#else
 #define PAL_U16 ((uint16_t *)paletteRAM)
 #define OAM_U16 ((uint16_t *)oam)
 static INLINE void palette_native_sync(uint16_t *dst) { (void)dst; /* no-op on LE */ }
 static INLINE void oam_native_sync(uint16_t *dst)     { (void)dst; /* no-op on LE */ }
+#endif
 #endif
 
 /* Used only within gba.c (the renderer_ctx struct has its own
@@ -162,8 +180,10 @@ static void hardware_reset(void)
 
 #if THREADED_RENDERER
 
-	/*THREADED_RENDERER_COUNT: 1 to 4 */
-	#if VITA
+	/*THREADED_RENDERER_COUNT: 1 to 4, or BATCHED_LINES (160) in PER_FRAME_BATCHED mode */
+	#ifdef PER_FRAME_BATCHED
+		#define THREADED_RENDERER_COUNT 160
+	#elif VITA
 		#define THREADED_RENDERER_COUNT 2
 	#else
 		#define THREADED_RENDERER_COUNT 1
@@ -185,6 +205,9 @@ static void hardware_reset(void)
 	int g_threaded_renderer_enabled = DEFAULT_THREADED_RENDERER_ENABLED;
 
 	static int threaded_renderer_idx = 0;
+#ifdef PER_FRAME_BATCHED
+	static int batched_publish_idx = 0;
+#endif
 	static uint32_t threaded_gfxinwin_ver[2] = {1, 1};
 	static volatile uint32_t threaded_background_ver = 0;
 	static volatile int threaded_renderer_ready = 0;
@@ -209,12 +232,14 @@ static void hardware_reset(void)
 		int lineOBJpixleft[128];
 		bool gfxInWin[2][240];
 
-#ifdef MSB_FIRST
-		/* Per-context host-endian shadow of paletteRAM and OAM.  Synced by
-		 * the main thread in postRender before renderer_state=1, read by the
-		 * worker during rendering.  Per-context (rather than a shared global)
-		 * so multiple in-flight scanlines don't see a torn snapshot during
-		 * the next-line sync. */
+#if defined(MSB_FIRST) || defined(PER_FRAME_BATCHED)
+		/* Per-context host-endian shadow of paletteRAM and OAM.  On BE this is
+		 * a byte-swapped snapshot that lets the renderer skip per-pixel swaps.
+		 * In batched mode on LE the snapshot is a plain memcpy and is required
+		 * for correctness: rendering happens at end-of-frame, so reading
+		 * paletteRAM/oam directly would give every scanline the end-of-frame
+		 * state.  Synced in postRender before the scanline is considered
+		 * published; read by the renderer during processing. */
 		uint16_t palette_native[0x200];
 		uint16_t oam_native[0x200];
 #endif
@@ -9416,6 +9441,15 @@ void ThreadedRendererStart(void)
    for(u = 0; u < THREADED_RENDERER_COUNT; ++u)
       init_renderer_context(&threaded_renderer_contexts[u]);
 
+#ifdef PER_FRAME_BATCHED
+   /* Batched mode does not yet plumb worker threads -- postRender writes
+    * into per-line snapshots and all 160 are rendered inline at end of
+    * frame.  Force the worker off so a stale option setting doesn't spawn
+    * a thread that would spin forever on renderer_state and burn a core
+    * during benchmarks. */
+   g_threaded_renderer_enabled = 0;
+#endif
+
    if(!g_threaded_renderer_enabled)
       return;
 
@@ -11619,10 +11653,18 @@ static void postRender() {
 	 * no-op expression in non-threaded mode; in C89 it must come BEFORE any
 	 * statement (the spin-wait below) so the decl-after-statement rule is
 	 * satisfied for the threaded build. */
+#ifdef PER_FRAME_BATCHED
+	INIT_RENDERER_CONTEXT(batched_publish_idx);
+	/* No spin-wait and no state=1 publish in batched mode: each scanline gets
+	 * its own dedicated context, so there is no producer/consumer overlap on
+	 * a single context during the frame.  Rendering for all 160 scanlines is
+	 * dispatched once at end-of-frame from the CPULoop. */
+#else
 	INIT_RENDERER_CONTEXT(threaded_renderer_idx);
 
 	while(threaded_renderer_contexts[threaded_renderer_idx].renderer_state)
 		SPIN_HINT();
+#endif
 
 	renderer_ctx.renderfunc_mode = renderfunc_mode;
 	renderer_ctx.renderfunc_type = renderfunc_type;
@@ -11732,22 +11774,38 @@ static void postRender() {
 	gfxBG2Changed = 0;
 	if(video_mode == 2)	gfxBG3Changed = 0;
 
-#ifdef MSB_FIRST
-	/* §5b/C: snapshot host-endian palette + OAM into THIS context's buffers
-	 * before the worker thread sees renderer_state=1.  Each context has its
-	 * own pair of shadows, so the worker reads a stable per-scanline snapshot
-	 * with no shared state and no race against the next-line sync. */
+#if defined(MSB_FIRST) || defined(PER_FRAME_BATCHED)
+	/* Snapshot host-endian palette + OAM into THIS context's buffers before
+	 * the renderer reads them.  On BE this is the existing byte-swap shadow
+	 * that lets the renderer skip per-pixel swaps.  In batched mode on LE
+	 * it is required for correctness: all 160 scanlines render at
+	 * end-of-frame, so without the per-line snapshot they would all see
+	 * end-of-frame paletteRAM/oam rather than their own per-line state. */
 	palette_native_sync(renderer_ctx.palette_native);
 	oam_native_sync(renderer_ctx.oam_native);
 #endif
 
 	/*buffer is ready. */
+#ifdef PER_FRAME_BATCHED
+	/* No state=1 publish: in batched mode each context is private until
+	 * end-of-frame, when the renderer drains all 160 in one pass. */
+#else
 	renderer_ctx.renderer_state = 1;
+#endif
 
 	/*notify screen is done. */
 	if(renderer_ctx.vcount == 159) threaded_renderer_ready = 1;
 
+#ifdef PER_FRAME_BATCHED
+	/* Advance per-line publish index; clamp at 159 for safety in case a
+	 * runaway vcount causes more than BATCHED_LINES postRender calls within
+	 * one frame (shouldn't happen but cheap to guard).  Reset to 0 happens
+	 * at end-of-frame in CPULoop after rendering is dispatched. */
+	if(batched_publish_idx < THREADED_RENDERER_COUNT - 1)
+		++batched_publish_idx;
+#else
 	threaded_renderer_idx = (threaded_renderer_idx + 1) % THREADED_RENDERER_COUNT;
+#endif
 }
 
 #endif
@@ -13291,6 +13349,20 @@ updateLoop:
 #endif
 #if THREADED_RENDERER
 						postRender();
+#ifdef PER_FRAME_BATCHED
+						/* Batched mode: no per-line worker dispatch.  All 160
+						 * scanlines have been snapshotted into their own
+						 * context; render them all here when the frame is
+						 * complete. */
+						if(threaded_renderer_ready) {
+							int _bi;
+							for(_bi = 0; _bi < THREADED_RENDERER_COUNT; ++_bi)
+								renderer_process_line(_bi);
+							batched_publish_idx = 0;
+							threaded_renderer_ready = 0;
+							systemDrawScreen();
+						}
+#else
 						if(!g_threaded_renderer_enabled) {
 							/* Synchronous fallback: postRender() already advanced
 							 * threaded_renderer_idx and set renderer_state=1 on the
@@ -13315,6 +13387,7 @@ updateLoop:
 							threaded_renderer_ready = 0;
 							systemDrawScreen();
 						}
+#endif
 #else
 						bool draw_objwin = (graphics.layerEnable & 0x9000) == 0x9000;
 						bool draw_sprites = R_DISPCNT_Screen_Display_OBJ;
