@@ -226,6 +226,12 @@ void retro_init(void)
    check_system_specs();
 
 #if THREADED_RENDERER
+	{
+		struct retro_variable var = { 0 };
+		var.key = "vbanext_threaded_renderer";
+		if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+			g_threaded_renderer_enabled = (strcmp(var.value, "enabled") == 0);
+	}
 	ThreadedRendererStart();
 #endif
 

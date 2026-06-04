@@ -95,6 +95,23 @@ struct retro_core_option_definition option_defs_us[] = {
       "0"
    },
 #endif
+#ifdef THREADED_RENDERER
+   {
+      "vbanext_threaded_renderer",
+      "Threaded Renderer (Restart)",
+      "Render scanlines on a worker thread.  May reduce stutter on slower CPUs at the cost of slight input-to-display latency.  Restart required for changes to take effect.",
+      {
+         { "disabled", NULL },
+         { "enabled",  NULL },
+         { NULL, NULL },
+      },
+#if DEFAULT_THREADED_RENDERER_ENABLED
+      "enabled"
+#else
+      "disabled"
+#endif
+   },
+#endif
    {
         "vbanext_turboenable",
         "Enable Turbo Buttons",

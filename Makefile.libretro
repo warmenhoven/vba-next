@@ -5,10 +5,28 @@ STATIC_LINKING=0
 USE_CHEATS=1
 USE_TWEAKS=0
 USE_THREADED_RENDERER=0
+DEFAULT_THREADED_RENDERER_ENABLED=0
 USE_MOTION_SENSOR=0
 USE_FRAME_SKIP=0
 HAVE_NEON=0
 LOAD_FROM_MEMORY = 1
+
+# Compile the threaded renderer code path into desktop platform builds.
+# The compile-time USE_THREADED_RENDERER switch controls whether the
+# threaded code path is even present in the binary (some platforms have
+# no threading support, in which case this must stay 0).  Inside a
+# threaded-enabled binary, a runtime core option (vbanext_threaded_renderer)
+# selects between sync and async execution.  The
+# DEFAULT_THREADED_RENDERER_ENABLED flag below controls the option's
+# default value: 0 (sync) for desktops where single-thread is plenty fast,
+# 1 (async) for Vita where the worker thread is needed for headroom.
+DESKTOP_PLATFORMS := unix osx windows_x86 windows_x86_64 mingw_x86 mingw_x86_64 \
+                     windows_msvc2005_x86 windows_msvc2010_x86 windows_msvc2010_x64 \
+                     windows_msvc2017_desktop_x86 windows_msvc2017_desktop_x64 \
+                     windows_msvc2017_desktop_arm
+ifneq (,$(filter $(platform),$(DESKTOP_PLATFORMS)))
+   USE_THREADED_RENDERER=1
+endif
 
 SPACE :=
 SPACE := $(SPACE) $(SPACE)
@@ -342,6 +360,7 @@ else ifeq ($(platform), vita)
 	USE_CHEATS=0 #for performance boost.
 	USE_TWEAKS=1
 	USE_THREADED_RENDERER=1
+	DEFAULT_THREADED_RENDERER_ENABLED=1
 	USE_MOTION_SENSOR=1
     USE_FRAME_SKIP=1
 	HAVE_NEON=1

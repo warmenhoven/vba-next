@@ -124,6 +124,7 @@ extern void SetFrameskip(int);
 #if THREADED_RENDERER
 extern void ThreadedRendererStart(void);
 extern void ThreadedRendererStop(void);
+extern int g_threaded_renderer_enabled;
 #endif
 
 #if USE_MOTION_SENSOR

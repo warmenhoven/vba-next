@@ -171,6 +171,19 @@ static void hardware_reset(void)
 
 	#include "thread.h"
 
+	/* Runtime flag controlling whether the renderer worker thread is
+	 * actually used.  Initialized from DEFAULT_THREADED_RENDERER_ENABLED
+	 * (set in the Vita Makefile to 1, default 0 elsewhere) and
+	 * overridable via the vbanext_threaded_renderer core option, which
+	 * is read once at retro_init time before ThreadedRendererStart runs.
+	 * When 0, the worker thread is never spawned and the render-loop
+	 * body is invoked synchronously on the emulation thread immediately
+	 * after each postRender() publish. */
+	#ifndef DEFAULT_THREADED_RENDERER_ENABLED
+		#define DEFAULT_THREADED_RENDERER_ENABLED 0
+	#endif
+	int g_threaded_renderer_enabled = DEFAULT_THREADED_RENDERER_ENABLED;
+
 	static int threaded_renderer_idx = 0;
 	static uint32_t threaded_gfxinwin_ver[2] = {1, 1};
 	static volatile uint32_t threaded_background_ver = 0;
@@ -9398,9 +9411,16 @@ void doMirroring (bool b)
 void ThreadedRendererStart(void)
 {
    int u;
+   /* Always init all contexts -- the synchronous dispatch path uses
+    * context 0 even when no worker is spawned. */
+   for(u = 0; u < THREADED_RENDERER_COUNT; ++u)
+      init_renderer_context(&threaded_renderer_contexts[u]);
+
+   if(!g_threaded_renderer_enabled)
+      return;
+
 	for(u = 0; u < THREADED_RENDERER_COUNT; ++u)
    {
-      init_renderer_context(&threaded_renderer_contexts[u]);
       threaded_renderer_contexts[u].renderer_control = 1;
 
       threaded_renderer_contexts[u].renderer_thread_id =
@@ -9416,6 +9436,10 @@ void ThreadedRendererStart(void)
 void ThreadedRendererStop(void)
 {
    int u;
+
+   if(!g_threaded_renderer_enabled)
+      return;
+
    for(u = 0; u < THREADED_RENDERER_COUNT; ++u)
       threaded_renderer_contexts[u].renderer_control = 2;
 
@@ -11478,84 +11502,74 @@ static void mode5RenderLineAll (int renderer_idx)
 }
 
 #if THREADED_RENDERER
-#define threaded_renderer_loop_impl() \
-do { \
-	if(renderer_ctx.renderer_state == 0) { SPIN_HINT(); continue; } \
-	\
-	if(renderer_ctx.background_ver < threaded_background_ver) { \
-		renderer_ctx.background_ver = threaded_background_ver; \
-		if(!RENDERER_R_DISPCNT_Screen_Display_BG0) \
-			memset(renderer_ctx.line[Layer_BG0], -1, 240 * sizeof(uint32_t)); \
-		if(!RENDERER_R_DISPCNT_Screen_Display_BG1) \
-			memset(renderer_ctx.line[Layer_BG1], -1, 240 * sizeof(uint32_t)); \
-		if(!RENDERER_R_DISPCNT_Screen_Display_BG2) \
-			memset(renderer_ctx.line[Layer_BG2], -1, 240 * sizeof(uint32_t)); \
-		if(!RENDERER_R_DISPCNT_Screen_Display_BG3) \
-			memset(renderer_ctx.line[Layer_BG3], -1, 240 * sizeof(uint32_t)); \
-	} \
-	\
-	memset(RENDERER_LINE[Layer_OBJ], -1, 240 * sizeof(uint32_t)); \
-	if(renderer_ctx.draw_sprites) (*drawSprites)(renderer_idx); \
-	\
-	if(renderer_ctx.renderfunc_type == 2) { \
-		memset(RENDERER_LINE[Layer_WIN_OBJ], -1, 240 * sizeof(uint32_t)); \
-		if(renderer_ctx.draw_objwin) (*drawOBJWin)(renderer_idx); \
-	} \
-	\
-	(*getRenderFunc)(renderer_idx, renderer_ctx.renderfunc_mode, renderer_ctx.renderfunc_type)(renderer_idx); \
-	\
-	renderer_ctx.renderer_state = 0;\
-} while (0)
+/* Per-line rendering work, sans spin-wait.  Used by the worker thread
+ * (after it observes renderer_state==1) and by the synchronous dispatch
+ * path when g_threaded_renderer_enabled==0.  On entry renderer_state==1;
+ * on exit it is reset to 0 so the next postRender() can publish a fresh
+ * line. */
+static INLINE void renderer_process_line(int renderer_idx)
+{
+	INIT_RENDERER_CONTEXT(renderer_idx);
+
+	if(renderer_ctx.background_ver < threaded_background_ver) {
+		renderer_ctx.background_ver = threaded_background_ver;
+		if(!RENDERER_R_DISPCNT_Screen_Display_BG0)
+			memset(renderer_ctx.line[Layer_BG0], -1, 240 * sizeof(uint32_t));
+		if(!RENDERER_R_DISPCNT_Screen_Display_BG1)
+			memset(renderer_ctx.line[Layer_BG1], -1, 240 * sizeof(uint32_t));
+		if(!RENDERER_R_DISPCNT_Screen_Display_BG2)
+			memset(renderer_ctx.line[Layer_BG2], -1, 240 * sizeof(uint32_t));
+		if(!RENDERER_R_DISPCNT_Screen_Display_BG3)
+			memset(renderer_ctx.line[Layer_BG3], -1, 240 * sizeof(uint32_t));
+	}
+
+	memset(RENDERER_LINE[Layer_OBJ], -1, 240 * sizeof(uint32_t));
+	if(renderer_ctx.draw_sprites) gfxDrawSprites(renderer_idx);
+
+	if(renderer_ctx.renderfunc_type == 2) {
+		memset(RENDERER_LINE[Layer_WIN_OBJ], -1, 240 * sizeof(uint32_t));
+		if(renderer_ctx.draw_objwin) gfxDrawOBJWin(renderer_idx);
+	}
+
+	GetRenderFunc(renderer_idx, renderer_ctx.renderfunc_mode, renderer_ctx.renderfunc_type)(renderer_idx);
+
+	renderer_ctx.renderer_state = 0;
+}
 
 static void threaded_renderer_loop0(void* p) {
 	int renderer_idx = 0;
 	INIT_RENDERER_CONTEXT(renderer_idx);
-
-	renderfunc_t drawSprites = gfxDrawSprites;
-	renderfunc_t drawOBJWin = gfxDrawOBJWin;
-	renderfunc_t (*getRenderFunc)(int, int, int) = GetRenderFunc;
+	(void)p;
 
 	while(renderer_ctx.renderer_control == 1) {
 		if(threaded_renderer_ready) {
 			threaded_renderer_ready = 0;
 			systemDrawScreen();
 		}
-		threaded_renderer_loop_impl();
+		if(renderer_ctx.renderer_state == 0) {
+			SPIN_HINT();
+			continue;
+		}
+		renderer_process_line(renderer_idx);
 	}
 
 	renderer_ctx.renderer_control = 0; /*loop is terminated. */
 }
 
 static void threaded_renderer_loop(void* p) {
-	int renderer_idx = (intptr_t)(p);
+	int renderer_idx = (int)(intptr_t)(p);
 	INIT_RENDERER_CONTEXT(renderer_idx);
 
-	renderfunc_t drawSprites = NULL;
-	renderfunc_t drawOBJWin = NULL;
-	renderfunc_t (*getRenderFunc)(int, int, int) = NULL;
-
-	switch(renderer_idx) {
-	case 1:
-		drawSprites = gfxDrawSprites;
-		drawOBJWin = gfxDrawOBJWin;
-		getRenderFunc = GetRenderFunc;
-		break;
-	case 2:
-		drawSprites = gfxDrawSprites;
-		drawOBJWin = gfxDrawOBJWin;
-		getRenderFunc = GetRenderFunc;
-		break;
-	case 3:
-		drawSprites = gfxDrawSprites;
-		drawOBJWin = gfxDrawOBJWin;
-		getRenderFunc = GetRenderFunc;
-		break;
-	default:
+	if(renderer_idx < 1 || renderer_idx > 3)
 		return;
-	}
 
-	while(renderer_ctx.renderer_control == 1)
-		threaded_renderer_loop_impl();
+	while(renderer_ctx.renderer_control == 1) {
+		if(renderer_ctx.renderer_state == 0) {
+			SPIN_HINT();
+			continue;
+		}
+		renderer_process_line(renderer_idx);
+	}
 
 	renderer_ctx.renderer_control = 0; /*loop is terminated. */
 }
@@ -13274,6 +13288,20 @@ updateLoop:
 #endif
 #if THREADED_RENDERER
 						postRender();
+						if(!g_threaded_renderer_enabled) {
+							/* Synchronous fallback: postRender() already advanced
+							 * threaded_renderer_idx and set renderer_state=1 on the
+							 * just-published context.  Drive the worker body inline
+							 * for that context, then service the end-of-frame
+							 * screen-draw signal that the worker thread would normally
+							 * handle. */
+							int idx = (threaded_renderer_idx + THREADED_RENDERER_COUNT - 1) % THREADED_RENDERER_COUNT;
+							renderer_process_line(idx);
+							if(threaded_renderer_ready) {
+								threaded_renderer_ready = 0;
+								systemDrawScreen();
+							}
+						}
 #else
 						bool draw_objwin = (graphics.layerEnable & 0x9000) == 0x9000;
 						bool draw_sprites = R_DISPCNT_Screen_Display_OBJ;
