@@ -20,7 +20,12 @@
 #if defined(__PS3__) || defined(__POWERPC__) || defined(__powerpc__) || defined(__ppc__) || defined(_XBOX360)
 /* `or 27,27,27` is the PPC low-priority SMT hint (Power ISA Book II) */
 #define SPIN_HINT() __asm__ volatile("or 27,27,27" ::: "memory")
-#elif defined(__x86_64__) || defined(__i386__) || defined(_M_IX86) || defined(_M_X64)
+#elif defined(_M_IX86) || defined(_M_X64)
+/* MSVC on x86/x64: no GCC-style __asm__ syntax; use the SSE2 PAUSE
+ * intrinsic from <intrin.h>.  Available since MSVC 2005. */
+#include <intrin.h>
+#define SPIN_HINT() _mm_pause()
+#elif defined(__x86_64__) || defined(__i386__)
 #define SPIN_HINT() __asm__ volatile("pause" ::: "memory")
 #elif defined(__aarch64__) || defined(__arm__)
 #define SPIN_HINT() __asm__ volatile("yield" ::: "memory")
