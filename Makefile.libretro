@@ -654,3 +654,21 @@ clean:
 endif
 
 endif
+
+# MSVC threaded builds need winmm.lib for timeGetTime / timeBeginPeriod, which
+# rthreads.c calls from scond_wait_win32 under the USE_WIN32_THREADS path.
+# The MSVC sub-Makefiles (build/Makefile.windows_msvc*) don't reference winmm
+# directly because the non-threaded link line never resolved through that TU;
+# enabling USE_THREADED_RENDERER pulls rthreads in and the link fails with
+# LNK2019 on __imp__timeGetTime@0 / __imp__timeBeginPeriod@4 unless winmm.lib
+# is on the link line.  This block sits at top-level scope -- past the
+# closing endif of the platform-include chain that begins at the `ifeq
+# ($(platform),android_arm64-v8a)` above -- so it fires for the explicit
+# `platform=windows_msvc*` targets that take an `include $(BUILD_DIR)/...`
+# branch and never enter the chain's catch-all `else` body.
+ifneq (,$(findstring msvc,$(platform)))
+ifeq ($(USE_THREADED_RENDERER), 1)
+LDFLAGS += winmm.lib
+endif
+endif
+

@@ -84,29 +84,42 @@ static INLINE void thread_sleep_ms(int ms)
 }
 #endif
 
+/* Trampoline arg holds the user function pointer in a properly-typed slot.
+ * Earlier this code stuffed the function pointer into a void*[2] and cast
+ * back, which is widely accepted but is technically UB in ISO C (function
+ * pointers are not convertible to/from data pointers) and trips MSVC
+ * warnings C4054 / C4055.  The struct keeps the function pointer typed
+ * throughout and is heap-owned so it outlives this stack frame. */
+struct _thread_run_args
+{
+   threadfunc_t func;
+   void* user_arg;
+};
+
 static void _thread_func(void* p)
 {
-   void** argp       = (void**)(p);
-   threadfunc_t func = (threadfunc_t)(argp[0]);
-   void* user_arg    = argp[1];
-   free(argp); /* free the heap-allocated arg pair before the user fn takes over */
+   struct _thread_run_args *args = (struct _thread_run_args*)p;
+   threadfunc_t func             = args->func;
+   void*        user_arg         = args->user_arg;
+   free(args); /* free the heap-allocated arg pair before the user fn takes over */
    (*func)(user_arg);
 }
 
 thread_t thread_run(threadfunc_t func, void* p, int priority)
 {
    sthread_t *thid = NULL;
-   /* argp must outlive this stack frame: the new thread reads it asynchronously.
+   /* args must outlive this stack frame: the new thread reads it asynchronously.
     * heap-allocate, transfer ownership to _thread_func which frees it. */
-   void** argp = (void**)malloc(2 * sizeof(void*));
-   if (!argp)
+   struct _thread_run_args *args =
+      (struct _thread_run_args*)malloc(sizeof(*args));
+   if (!args)
       return NULL;
-   argp[0] = (void*)(func);
-   argp[1] = p;
+   args->func     = func;
+   args->user_arg = p;
 
-   thid = sthread_create(_thread_func, argp);
+   thid = sthread_create(_thread_func, args);
    if (!thid) {
-      free(argp);
+      free(args);
       return NULL;
    }
    sthread_detach(thid);
