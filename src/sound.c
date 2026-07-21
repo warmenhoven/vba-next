@@ -1763,7 +1763,6 @@ static uint32_t Blip_Buffer_clock_rate_factor(const Blip_Buffer *self, long rate
 
 /* Uses three buffers (one for center) and outputs stereo sample pairs. */
 
-#define STEREO_BUFFER_SAMPLES_AVAILABLE() ((long)(bufs_buffer[0].offset_ -  mixer_samples_read) << 1)
 #define stereo_buffer_samples_avail() ((((bufs_buffer [0].offset_ >> BLIP_BUFFER_ACCURACY) - mixer_samples_read) << 1))
 
 
@@ -1913,8 +1912,9 @@ static void blip_buffer_remove_all_samples( long count )
 static long stereo_buffer_read_samples( int16_t * out, long out_size )
 {
 	int pair_count;
+	long avail = stereo_buffer_samples_avail();
 
-        out_size = (STEREO_BUFFER_SAMPLES_AVAILABLE() < out_size) ? STEREO_BUFFER_SAMPLES_AVAILABLE() : out_size;
+        out_size = (avail < out_size) ? avail : out_size;
 
         pair_count = (int)(out_size >> 1);
         if ( pair_count )
