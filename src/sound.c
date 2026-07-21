@@ -13,7 +13,6 @@ Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA */
 #include <stdlib.h>
 #include <string.h>
 #include <limits.h>
-#include <math.h>
 
 #include "sound.h"
 
@@ -1683,10 +1682,6 @@ static void Gb_Wave_run(Gb_Wave *self, int32_t time, int32_t end_time)
 /* Blip_Buffer 0.4.1. http://www.slack.net/~ant */
 
 #define FIXED_SHIFT 12
-#define SAL_FIXED_SHIFT 4096
-#define TO_FIXED( f )   int ((f) * SAL_FIXED_SHIFT)
-#define FROM_FIXED( f ) ((f) >> FIXED_SHIFT)
-
 static uint32_t Blip_Buffer_clock_rate_factor(const Blip_Buffer *self, long rate);
 
 static void Blip_Buffer_clear(Blip_Buffer *self)
