@@ -441,6 +441,9 @@ long  soundSampleRate    = 32000;
 int   SOUND_CLOCK_TICKS  = SOUND_CLOCK_TICKS_;
 int   soundTicks         = SOUND_CLOCK_TICKS_;
 
+/* Muting bitmask; the bits control the following channels:
+ * 0x001 Pulse 1, 0x002 Pulse 2, 0x004 Wave, 0x008 Noise,
+ * 0x100 PCM 1, 0x200 PCM 2 */
 static int soundEnableFlag   = 0x3ff; /* emulator channels enabled*/
 /* The GB APU master-volume scale used to be a float table (apu_vols) feeding a
  * float chain  v = apu_vols[idx]*0.60/OSC_COUNT/15/8*iv  ->  Blip_Synth_volume()
