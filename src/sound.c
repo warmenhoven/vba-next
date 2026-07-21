@@ -2217,7 +2217,7 @@ void process_sound_tick_fn (void)
 static void apply_muting (void)
 {
 	/* PCM */
-	gba_pcm_apply_control(1, 0 );
+	gba_pcm_apply_control(0, 0 );
 	gba_pcm_apply_control(1, 1 );
 
 	/* APU */
