@@ -1819,7 +1819,11 @@ static INLINE void stereo_buffer_mixer_read_pairs( int16_t* out, int count )
 	 * step is the classic blip one-pole DC blocker:
 	 *     accum -= accum >> 9;   (9 == old BLIP_READER_DEFAULT_BASS)
 	 *     accum += buf[offset];
-	 * and the clamp narrows the >>14 mix result to int16_t range. */
+	 * and the clamp narrows the >>14 mix result to int16_t range.  The
+	 * + (1 << 13) rounds the quantization to nearest (half toward +inf)
+	 * instead of the old floor shift, removing the floor's constant
+	 * -0.5 LSB average bias; each sample is unchanged or +1 LSB vs the
+	 * old output, never further from the exact 2^30-domain value. */
 	const int32_t* center_buf;
 	/* TODO: if caller never marks buffers as modified, uses mono*/
 	/* except that buffer isn't cleared, so caller can encounter*/
@@ -1845,7 +1849,7 @@ static INLINE void stereo_buffer_mixer_read_pairs( int16_t* out, int count )
 		offset = -count;
 		do
 		{
-			int s = (center_accum + side_accum) >> 14;
+			int s = (center_accum + side_accum + (1 << 13)) >> 14;
 			side_accum   += side_buf   [offset] - (side_accum   >> 9);
 			center_accum += center_buf [offset] - (center_accum >> 9);
 			if ( s < -0x8000 || 0x7FFF < s )
@@ -1872,7 +1876,7 @@ static INLINE void stereo_buffer_mixer_read_pairs( int16_t* out, int count )
 		offset = -count;
 		do
 		{
-			int s = (center_accum + side_accum) >> 14;
+			int s = (center_accum + side_accum + (1 << 13)) >> 14;
 			side_accum   += side_buf   [offset] - (side_accum   >> 9);
 			center_accum += center_buf [offset] - (center_accum >> 9);
 			if ( s < -0x8000 || 0x7FFF < s )
